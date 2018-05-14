@@ -1,0 +1,137 @@
+import numpy as np
+import time
+import matplotlib.pyplot as plt
+
+def left(a):
+    n = np.size(a)
+    b = a[0:n-1]
+    return np.insert(b, 0, 0)
+
+def right(a):
+    n = np.size(a)
+    b = a[1:]
+    return np.append(b, 0)
+
+def hamil_force(x, k, alpha, beta):
+    # giving the Hamiltonian force of chain
+    f1 = -k * (x - left(x)) + alpha * (x - left(x)) ** 2 - beta * (x - left(x)) ** 3
+    f2 = -k * (x - right(x)) - alpha * (x - right(x)) ** 2 - beta * (x - right(x)) ** 3
+    return f1 + f2
+
+def random_force(T, gamma, delta_t):
+    # giving the random force of thermal reservoir
+    f = np.random.randn()
+    return np.sqrt(2 * T * gamma / delta_t) * f
+
+def ext_f(A, omega, delta_t, n):
+    # giving the external driving force at step n
+    return A * np.sin(omega * delta_t * n)
+
+class lattice:
+    # class of middle system
+    def __init__(self, k=1., alpha=0., beta=1., T1=1., gamma1=1., T2=1., gamma2=1., N=100, nc=5, A=5., omega=1, delta_t=3e-2,
+                 num=90000):
+        self.nc = nc  # the position of external driving
+        self.k, self.alpha, self.beta = k, alpha, beta  # parameter of chain potential(FPU parameters)
+        self.T1, self.gamma1 = T1, gamma1  # parameter of reservoir one
+        self.T2, self.gamma2 = T2, gamma2  # parameter of reservoir two
+        self.N = N  # length of chain
+        self.nc, self.A, self.omega = nc, A, omega  # information of external driving
+        self.delta_t, self.num = delta_t, num  # recursion step width and number of steps
+
+        self.x_pre, self.x = np.zeros(self.N), np.zeros(self.N)
+        # the position of individual atoms in chain at present and previous time
+        self.p_pre, self.p = np.zeros(self.N), np.zeros(self.N)
+        # the momentum of individual atoms in chain at present and previous time
+        self.f_pre, self.f = np.zeros(self.N), np.zeros(self.N)
+        # the force on individual atoms in chain at present and previous time
+
+        self.force_bath1,self.force_bath2=0,0   # the force of reservoir to the chain
+        self.force_ext=0      # the external force
+
+        self.Q1, self.Q2, self.W = 0, 0, 0  # the integrated current
+        self.temp_dis_pre,self.temp_dis = np.zeros(self.N),np.zeros(self.N)  # temperature distribution over the chain
+        self.temp_avg=self.temp_dis_pre
+
+    def __getitem__(self, item):
+        # returning the physical value of one atom
+        alt, ord = item
+        if alt == 'x':
+            return self.x[ord]
+        elif alt == 'p':
+            return self.p[ord]
+        elif alt=='f':
+            return self.f[ord]
+        else:
+            return 0
+
+    def __setitem__(self, key, value):
+        # modifying the physical value of one atom
+        alt, ord = key
+        if alt == 'x':
+            self.x[ord] = value
+        elif alt == 'p':
+            self.p[ord] = value
+        elif alt=='f':
+            self.f[ord]=value
+        else:
+            return 0
+
+    def temperature(self):
+        self.temp_dis=self.p**2/2
+
+    def F_bath(self):  # generating the force of two reservoirs
+        f1 = -self.gamma1*self['p',0]+random_force(self.T1, self.gamma1, self.delta_t)
+        f2 = -self.gamma2*self['p',self.N-1]+random_force(self.T2, self.gamma2, self.delta_t)
+        self.force_bath1,self.force_bath2=f1,f2
+
+    def force(self,n):   # n is the ordinal number of step
+        f0=hamil_force(self.x,self.k,self.alpha,self.beta)
+        self.force_ext=ext_f(self.A, self.omega, self.delta_t, n)
+        self.F_bath()
+        f0[0]+=self.force_bath1
+        f0[self.N-1]+=self.force_bath2
+        f0[self.nc]+=self.force_ext
+        self.f = f0
+
+    def one_update(self, n):
+        # updating by a time step, using the second order symplectic algorithm(verlet algorithm)
+        # updating from position, to force, then to momentum
+        if n==0:
+            self.force(n)
+            self.temperature()
+
+        # updating the microscopic dynamics
+        self.x_pre,self.f_pre,self.p_pre=self.x,self.f,self.p
+        self.x=self.x_pre+self.p_pre*self.delta_t+self.f_pre*self.delta_t**2/2
+        self.force(n)
+        self.p=self.p_pre+(self.f_pre+self.f)*self.delta_t/2
+
+        # updating the Q1,Q2,W, and the temperature distribution
+        self.temp_dis_pre=self.temp_dis
+        self.temperature()
+        if n>=(3*self.num/4):
+            self.temp_avg += self.temp_dis
+            self.Q1 += self.delta_t * self['p', 0] * self.force_bath1
+            self.Q2 += self.delta_t * self['p', self.N - 1] * self.force_bath2
+            self.W += self.delta_t * self['p', self.nc] * self.force_ext
+
+    def total_cal(self):
+        for i in range(self.num):
+            # print(self['x',self.N-1])
+            self.one_update(i)
+        self.temp_avg/=(self.num/4)
+        self.Q1/=(self.num*self.delta_t/4)
+        self.Q2/=(self.num*self.delta_t/4)
+        self.W/=(self.num*self.delta_t/4)
+
+x1=time.time()
+exa=lattice(k=1.,alpha=0.,beta=0.,T1=1.,T2=3.,A=0,num=999990)
+exa.total_cal()
+print(exa.Q1,exa.Q2,exa.W)
+print((exa.Q1+exa.Q2+exa.W)/max(exa.Q1,exa.Q2,exa.W))
+# plt.figure()
+# plt.plot(np.arange(exa.N),exa.temp_avg)
+# plt.show()
+x2=time.time()
+print('time consumed:',x2-x1)
